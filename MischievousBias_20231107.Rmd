@@ -1,0 +1,471 @@
+---
+output: rticles::springer_article
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      out.extra = "")  # This forces knitr to label all figures.
+```
+
+
+## Step 1: Identify screener items {#subsec2_1}
+```{r}
+rm(list=ls()) 
+require(randomForest)
+require(unbalanced)
+require(DMwR)
+require(pROC)
+require(twang)
+require(survey)
+require(gbm)
+require(lme4)
+require(nlme)
+require(data.table)
+
+set.seed(1234)
+
+load("C:/RProjects/UnACoRN/unacorn_1_20230704.RData")
+
+unacorn$heterosexual <- 0
+unacorn$heterosexual[unacorn$sexual_minority=="No"] <- 1
+unacorn <- subset(unacorn,!is.na(unacorn$sexual_minority)) #subsetting sample to those with valid information on sexual orientation
+
+## Recoding outcomes as binary
+## Attending Boarding School
+unacorn$boarding <- as.character(unacorn$Q134_1)
+unacorn$boarding[unacorn$Q134_1=="I've attended one"] <- "1" # outcome is attended residential programs for 'troubled teens'
+unacorn$boarding[unacorn$Q134_1=="Left the Survey"] <- NA
+unacorn$boarding <- as.numeric(as.character(unacorn$boarding))
+
+## Has heard of conversion therapy
+unacorn$heard_of_CT <- as.numeric(NA)
+unacorn$heard_of_CT[unacorn$Q107 == "Yes"] <- 1 
+unacorn$heard_of_CT[unacorn$Q107 == "No"] <- 0
+
+## Suicidal
+unacorn$suicidal <- as.numeric(unacorn$SBQR_category)
+unacorn$suicidal <- unacorn$suicidal-1
+
+## Participation in sports
+unacorn$sports <- as.numeric(NA)
+unacorn$sports[unacorn$Q45_1=="Yes, currently" & unacorn$Q45_2 == "Yes, in the past"] <- 1
+unacorn$sports[unacorn$Q45_3=="No"] <- 0
+
+## Autism diagnosis by a healthcare provider
+unacorn$autism <- as.numeric(NA)
+unacorn$autism[unacorn$Q160_3=="Yes"] <- 1
+unacorn$autism[unacorn$Q160_3=="No"] <- 0
+
+## Currently on psychiatric medication
+unacorn$medicated <- as.numeric(NA)
+unacorn$medicated[unacorn$Q167=="Yes"] <-1
+unacorn$medicated[unacorn$Q167=="No" | unacorn$Q165_5=="No, I have never taken any of the above"] <-0
+
+## Diagnosis of schizophrenia
+unacorn$schizophrenia <- as.numeric(NA)
+unacorn$schizophrenia[unacorn$Q160_5=="Yes"] <- 1
+unacorn$schizophrenia[unacorn$Q160_5=="No"] <- 0
+
+write.csv(unacorn, file="unadat.csv")
+sadc=read.csv("unadat.csv", stringsAsFactors=T, na.strings = c("Left the Survey", "Prefer not to answer", "NA")) 
+
+
+#attach(sadc)
+
+tableName <- paste("unadat_weighted.csv", sep = "")
+
+
+
+
+re <- sadc
+renew <- re
+
+library(dplyr)
+
+# Adding missing as information for the predictive models
+
+# list of variable names
+vars <- c("Q210", "Q212", "Q407", "Q33_1", "gender_diverse")
+
+# replace NA with "Missing" and convert back to factor
+library(dplyr)
+
+renew <- renew %>%
+  mutate(across(c("Q41_5_1", "Q210", "Q212", "Q407", "Q33_1", "gender_diverse"), ~ {
+    x <- as.character(.)
+    x[is.na(x)] <- "Missing"
+    as.factor(x)
+  }))
+
+# MATCHING FOR MODEL 1 - main/initial screener based on 4 items: 
+# number of siblings, place of birth of parents, immigration status, and country
+ps.mod1 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q212 + Q407,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+
+re$w_es_mean1 <- get.weights(ps.mod1, stop.method="es.mean")
+re$w_ks_max1 <- get.weights(ps.mod1, stop.method="ks.max")
+re$pses1 <- ps.mod1$ps$es.mean.ATT
+re$psks1 <- ps.mod1$ps$ks.max.ATT
+
+
+summary(ps.mod1)
+summary(ps.mod1$gbm.obj,n.trees=ps.mod1$desc$ks.max.ATT$n.trees)
+plot(ps.mod1, plots = 2)
+#plot(ps.mod1, plots = 3)
+#plot(ps.mod1, plots = 4)
+#plot(ps.mod1, plots = 5)
+#plot(ps.mod1, plots = 3, subset = 2)
+
+# MODEL 2 without number of siblings
+ps.mod2 <- ps(heterosexual ~ Q208 + Q212 + Q407,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+
+re$w_es_mean2 <- get.weights(ps.mod2, stop.method="es.mean")
+re$w_ks_max2 <- get.weights(ps.mod2, stop.method="ks.max")
+re$pses2 <- ps.mod2$ps$es.mean.ATT
+re$psks2 <- ps.mod2$ps$ks.max.ATT
+
+# number of siblings, immigration status, and country
+ps.mod3 <- ps(heterosexual ~ Q41_5_1 + Q212 + Q407,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+
+re$w_es_mean3 <- get.weights(ps.mod3, stop.method="es.mean")
+re$w_ks_max3 <- get.weights(ps.mod3, stop.method="ks.max")
+re$pses3 <- ps.mod3$ps$es.mean.ATT
+re$psks3 <- ps.mod3$ps$ks.max.ATT
+
+# number of siblings, place of birth of parents, and country
+ps.mod4 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q407,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+
+re$w_es_mean4 <- get.weights(ps.mod4, stop.method="es.mean")
+re$w_ks_max4 <- get.weights(ps.mod4, stop.method="ks.max")
+re$pses4 <- ps.mod4$ps$es.mean.ATT
+re$psks4 <- ps.mod4$ps$ks.max.ATT
+
+# number of siblings, place of birth of parents, and immigration status
+ps.mod5 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q212,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+
+re$w_es_mean5 <- get.weights(ps.mod5, stop.method="es.mean")
+re$w_ks_max5 <- get.weights(ps.mod5, stop.method="ks.max")
+re$pses5 <- ps.mod5$ps$es.mean.ATT
+re$psks5 <- ps.mod5$ps$ks.max.ATT
+
+# MODEL 6 - screener plus gender_diverse + born_sexuality
+ps.mod6 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q212 + Q407 + gender_diverse + Q33_1,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+re$w_es_mean6 <- get.weights(ps.mod6, stop.method="es.mean")
+re$w_ks_max6 <- get.weights(ps.mod6, stop.method="ks.max")
+re$pses6 <- ps.mod6$ps$es.mean.ATT
+re$psks6 <- ps.mod6$ps$ks.max.ATT
+
+# MATCHING FOR MODEL 7 - screener plus gender_diverse
+ps.mod7 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q212 + Q407 + gender_diverse,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+re$w_es_mean7 <- get.weights(ps.mod7, stop.method="es.mean")
+re$w_ks_max7 <- get.weights(ps.mod7, stop.method="ks.max")
+re$pses7 <- ps.mod7$ps$es.mean.ATT
+re$psks7 <- ps.mod7$ps$ks.max.ATT
+
+# MATCHING FOR MODEL 8 - screener plus born_sexuality
+ps.mod8 <- ps(heterosexual ~ Q41_5_1 + Q210 + Q212 + Q407 + Q33_1,
+              data = renew,
+              n.trees=5000,
+              interaction.depth=3,
+              shrinkage=0.01,
+              perm.test.iters=0,
+              stop.method=c("es.mean","ks.max"),                 
+              estimand = "ATT",
+              verbose=FALSE)
+re$w_es_mean8 <- get.weights(ps.mod8, stop.method="es.mean")
+re$w_ks_max8 <- get.weights(ps.mod8, stop.method="ks.max")
+re$pses8 <- ps.mod8$ps$es.mean.ATT
+re$psks8 <- ps.mod8$ps$ks.max.ATT
+
+#NO MODEL 9
+
+#write.table(re, file = tableName,  sep = ",", col.names = NA, qmethod = "double")
+
+#our estimates are already IPW because we estimated the probability of being heterosexual. We do not reweight because there are no sampling weights.
+
+# List of your weight variable names
+weight_vars <- names(re)[startsWith(names(re), "w_ks_")]
+
+# For each set of weights
+for (w in weight_vars) {
+  
+  # Initial weights
+  re$weight <- 1
+  
+  # Weight adjustment for non-heterosexual respondents
+  re$weight[re$heterosexual == 0] <- re$weight[re$heterosexual == 0] * re[[w]][re$heterosexual == 0] / (1 - re[[w]][re$heterosexual == 0])
+  
+  # Scale the weights to maintain the non-heterosexual sample size
+  non_hetero_sample_size <- sum(re$heterosexual == 0)
+  re$weight[re$heterosexual == 0] <- re$weight[re$heterosexual == 0] * non_hetero_sample_size / sum(re$weight[re$heterosexual == 0])
+  
+  # Create a new column in the dataframe to store the weights for this particular model
+  re[[paste0(w, "_weight")]] <- re$weight
+}
+
+weights_list <- paste0(weight_vars, "_weight")
+re[weights_list] <-  lapply(re[weights_list], function(x) replace(x, x < 0, 0.0000000000000001))
+
+
+
+re$exposure <- ifelse(re$heterosexual == 1, 0, 1)
+
+library(survey)
+
+# create a survey design object
+design1 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max1_weight)
+design2 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max2_weight)
+design3 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max3_weight)
+design4 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max4_weight)
+design5 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max5_weight)
+design6 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max6_weight)
+design7 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max7_weight)
+design8 <- svydesign(ids = ~1, data = re, weights = ~w_ks_max8_weight)
+
+
+
+
+# fit a GLM with a Poisson distribution
+model1 <- svyglm(suicidal ~ exposure, design1, family = poisson(link = "log"))
+model2 <- svyglm(suicidal ~ exposure, design2, family = poisson(link = "log"))
+model3 <- svyglm(suicidal ~ exposure, design3, family = poisson(link = "log"))
+model4 <- svyglm(suicidal ~ exposure, design4, family = poisson(link = "log"))
+model5 <- svyglm(suicidal ~ exposure, design5, family = poisson(link = "log"))
+model6 <- svyglm(suicidal ~ exposure, design6, family = poisson(link = "log"))
+model7 <- svyglm(suicidal ~ exposure, design7, family = poisson(link = "log"))
+model8 <- svyglm(suicidal ~ exposure, design8, family = poisson(link = "log"))
+
+unadjusted_model <- glm(suicidal ~ exposure, family = poisson(link = "log"), data = re)
+
+
+
+
+library(tidyverse)
+library(gtsummary)
+
+tbl0 <- tbl_regression(unadjusted_model, exponentiate = T)
+tbl1 <- tbl_regression(model1, exponentiate = T)
+tbl2 <- tbl_regression(model2, exponentiate = T)
+tbl3 <- tbl_regression(model3, exponentiate = T)
+tbl4 <- tbl_regression(model4, exponentiate = T)
+tbl5 <- tbl_regression(model5, exponentiate = T)
+tbl6 <- tbl_regression(model6, exponentiate = T)
+tbl7 <- tbl_regression(model7, exponentiate = T)
+tbl8 <- tbl_regression(model8, exponentiate = T)
+
+suic_res <- tbl_stack(list(tbl0, tbl1, tbl2, tbl3, tbl4, tbl5, tbl6, tbl7, tbl8))
+
+## autism
+model1_b <- svyglm(autism ~ exposure, design1, family = poisson(link = "log"))
+model2_b <- svyglm(autism ~ exposure, design2, family = poisson(link = "log"))
+model3_b <- svyglm(autism ~ exposure, design3, family = poisson(link = "log"))
+model4_b <- svyglm(autism ~ exposure, design4, family = poisson(link = "log"))
+model5_b <- svyglm(autism ~ exposure, design5, family = poisson(link = "log"))
+model6_b <- svyglm(autism ~ exposure, design6, family = poisson(link = "log"))
+model7_b <- svyglm(autism ~ exposure, design7, family = poisson(link = "log"))
+model8_b <- svyglm(autism ~ exposure, design8, family = poisson(link = "log"))
+
+model0_b <- glm(autism ~ exposure, family = poisson(link = "log"), data = re)
+
+tbl0_b <- tbl_regression(model0_b, exponentiate = T)
+tbl1_b <- tbl_regression(model1_b, exponentiate = T)
+tbl2_b <- tbl_regression(model2_b, exponentiate = T)
+tbl3_b <- tbl_regression(model3_b, exponentiate = T)
+tbl4_b <- tbl_regression(model4_b, exponentiate = T)
+tbl5_b <- tbl_regression(model5_b, exponentiate = T)
+tbl6_b <- tbl_regression(model6_b, exponentiate = T)
+tbl7_b <- tbl_regression(model7_b, exponentiate = T)
+tbl8_b <- tbl_regression(model8_b, exponentiate = T)
+
+autism_res <- tbl_stack(list(tbl0_b, tbl1_b, tbl2_b, tbl3_b, tbl4_b, tbl5_b, tbl6_b, tbl7_b, tbl8_b))
+
+
+## Schizophrenia
+model1c <- svyglm(schizophrenia ~ exposure, design1, family = poisson(link = "log"))
+model2c <- svyglm(schizophrenia ~ exposure, design2, family = poisson(link = "log"))
+model3c <- svyglm(schizophrenia ~ exposure, design3, family = poisson(link = "log"))
+model4c <- svyglm(schizophrenia ~ exposure, design4, family = poisson(link = "log"))
+model5c <- svyglm(schizophrenia ~ exposure, design5, family = poisson(link = "log"))
+model6c <- svyglm(schizophrenia ~ exposure, design6, family = poisson(link = "log"))
+model7c <- svyglm(schizophrenia ~ exposure, design7, family = poisson(link = "log"))
+model8c <- svyglm(schizophrenia ~ exposure, design8, family = poisson(link = "log"))
+
+model0c <- glm(schizophrenia ~ exposure, family = poisson(link = "log"), data = re)
+
+tbl0c <- tbl_regression(model0c, exponentiate = T)
+tbl1c <- tbl_regression(model1c, exponentiate = T)
+tbl2c <- tbl_regression(model2c, exponentiate = T)
+tbl3c <- tbl_regression(model3c, exponentiate = T)
+tbl4c <- tbl_regression(model4c, exponentiate = T)
+tbl5c <- tbl_regression(model5c, exponentiate = T)
+tbl6c <- tbl_regression(model6c, exponentiate = T)
+tbl7c <- tbl_regression(model7c, exponentiate = T)
+tbl8c <- tbl_regression(model8c, exponentiate = T)
+
+schizophrenia_res <- tbl_stack(list(tbl0c, tbl1c, tbl2c, tbl3c, tbl4c, tbl5c, tbl6c, tbl7c, tbl8c))
+
+# medicated
+model1d <- svyglm(medicated ~ exposure, design1, family = poisson(link = "log"))
+model2d <- svyglm(medicated ~ exposure, design2, family = poisson(link = "log"))
+model3d <- svyglm(medicated ~ exposure, design3, family = poisson(link = "log"))
+model4d <- svyglm(medicated ~ exposure, design4, family = poisson(link = "log"))
+model5d <- svyglm(medicated ~ exposure, design5, family = poisson(link = "log"))
+model6d <- svyglm(medicated ~ exposure, design6, family = poisson(link = "log"))
+model7d <- svyglm(medicated ~ exposure, design7, family = poisson(link = "log"))
+model8d <- svyglm(medicated ~ exposure, design8, family = poisson(link = "log"))
+
+model0d <- glm(medicated ~ exposure, family = poisson(link = "log"), data = re)
+
+tbl0d <- tbl_regression(model0d, exponentiate = T)
+tbl1d <- tbl_regression(model1d, exponentiate = T)
+tbl2d <- tbl_regression(model2d, exponentiate = T)
+tbl3d <- tbl_regression(model3d, exponentiate = T)
+tbl4d <- tbl_regression(model4d, exponentiate = T)
+tbl5d <- tbl_regression(model5d, exponentiate = T)
+tbl6d <- tbl_regression(model6d, exponentiate = T)
+tbl7d <- tbl_regression(model7d, exponentiate = T)
+tbl8d <- tbl_regression(model8d, exponentiate = T)
+
+med_res <- tbl_stack(list(tbl0d, tbl1d, tbl2d, tbl3d, tbl4d, tbl5d, tbl6d, tbl7d, tbl8d))
+
+models_a <- c("Unadjusted", "Screener (S)", "S -number of siblings","S -country of parents", "S -immigration status", "S -country", "S +gender diverse and born this way", "S + gender diverse", "S + born this way")
+models <- paste0("model ",1:8)
+suic_res$table_body$label <- c("raw model", models)
+med_res$table_body$label <- c("raw model", models)
+autism_res$table_body$label <- c("raw model", models)
+schizophrenia_res$table_body$label <- c("raw model", models)
+
+library(gt)
+suic_res <-  as_gt(suic_res) %>%
+  tab_header(
+    title = "Prevalence Ratio: Suicidality",
+    subtitle = "Exposure = Sexual minority"
+  )
+
+med_res <-  as_gt(med_res) %>%
+  tab_header(
+    title = "Prevalence Ratio: Current use of Psychiatric medication",
+    subtitle = "Exposure = Sexual minority"
+  )
+
+autism_res <-  as_gt(autism_res) %>%
+  tab_header(
+    title = "Prevalence Ratio: Autism diagnosis",
+    subtitle = "Exposure = Sexual minority"
+  )
+
+
+schizophrenia_res <-  as_gt(schizophrenia_res) %>%
+  tab_header(
+    title = "Prevalence Ratio: Schizophrenia diagnosis",
+    subtitle = "Exposure = Sexual minority"
+  )
+
+
+suic_res
+med_res
+autism_res
+schizophrenia_res
+
+
+
+
+library(ggplot2)
+library(ggsignif)
+library(dplyr)
+
+re %>% 
+  filter(!is.na(race_number)) %>% droplevels.data.frame() %>%
+  mutate(race_number = as.factor(race_number)) %>%
+  ggplot(aes(x = race_number, y = w_ks_max1_weight)) +
+  geom_boxplot() +
+  ylim(c(min(re$w_ks_max1_weight), max(re$w_ks_max1_weight) + 1)) + # Adjust the Y-axis limits
+  geom_signif(
+    comparisons = list(c("1", "2"), c("1", "3"), c("1", "4"), c("2", "3"), c("2", "4")), # Explicitly set comparisons
+    map_signif_level = TRUE
+  )
+
+
+re %>%  filter(!is.na(bucket_age)) %>%  droplevels.data.frame() %>% ggplot(aes(x = bucket_age, y = w_ks_max1_weight)) +
+  geom_boxplot() + # using `ggsignif` to display comparison of interest
+  ylim(c(min(re$w_ks_max1_weight), max(re$w_ks_max1_weight) + 1)) + # Adjust the Y-axis limits
+  geom_signif(
+    comparisons = list(c("1", "2"), c("1", "3"), c("2", "3")),
+    map_signif_level = TRUE
+  )
+
+re %>%   filter(!is.na(Q15)) %>%  ggplot(aes(x = Q15, y = w_ks_max1_weight)) +
+  geom_boxplot() + # using `ggsignif` to display comparison of interest
+  geom_signif(
+    comparisons = list(c(1:2)),
+    map_signif_level = TRUE
+  )
+
+ggplot(re, aes(bucket_age, w_ks_max1_weight)) +
+  geom_bar(aes(fill = Q15), stat = "identity", position = "dodge", width = .5) +
+  geom_signif(
+    y_position = c(5.3, 8.3), xmin = c(0.8, 1.8), xmax = c(1.2, 2.2),
+    annotation = c("**", "NS"), tip_length = 0
+  ) +
+  geom_signif(
+    comparisons = list(c("S1", "S2")),
+    y_position = 9.3, tip_length = 0, vjust = 0.2
+  ) +
+  scale_fill_manual(values = c("grey80", "grey20"))
+
+```
